@@ -1,0 +1,32 @@
+# Ignore local environment files and secrets
+*.env
+*.env.*
+**/.env
+**/.env.*
+.env
+.env.*
+
+# Ignore local Python environment and compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+
+# Ignore Java build output
+**/target/
+
+# Ignore editor and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Optional secret and credential files
+**/credentials
+**/secrets.*
+**/*.key
+**/*.pem
+**/*.crt
+**/*.p12
