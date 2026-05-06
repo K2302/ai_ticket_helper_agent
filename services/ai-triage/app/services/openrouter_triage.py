@@ -8,6 +8,7 @@ import httpx
 
 from app.core.config import Settings
 from app.domain.models import Category, EscalationRisk, Priority, TicketCreatedEvent
+from app.services.triage_tree import TRIAGE_TREE, validate_decision_path
 
 logger = logging.getLogger(__name__)
 
@@ -15,14 +16,17 @@ _TIMEOUT_SECONDS = 8.0           # hard budget per LLM call
 _CB_FAILURE_THRESHOLD = 5        # open circuit after N consecutive failures
 _CB_RECOVERY_SECONDS = 60.0      # half-open retry window
 
-# Phase 2: prompt version pinned here so it propagates to every RiskDecision
-PROMPT_VERSION = "triage-prompt-v1.0.0"
+# Tree-driven prompt — version bumped to v2 (config-driven tree injected)
+PROMPT_VERSION = "triage-prompt-v2.0.0"
 
 # Allowed enum values for strict validation — LLM must return exactly one of these
 _VALID_CATEGORIES = {c.value for c in Category}
 _VALID_PRIORITIES = {p.value for p in Priority}
 _VALID_ESCALATION_RISKS = {e.value for e in EscalationRisk}
-_REQUIRED_KEYS = frozenset({"category", "priority", "escalation_risk", "confidence"})
+_REQUIRED_KEYS = frozenset({"category", "priority", "escalation_risk", "confidence", "decision_path"})
+
+# Serialise tree once at import time — expensive only once
+_TREE_JSON = json.dumps(TRIAGE_TREE, indent=2)
 
 
 class _CircuitState(StrEnum):
@@ -37,12 +41,16 @@ class LlmTriageFeatures:
     LLM output: structured feature extraction only.
     The LLM NEVER writes a final decision — it provides enriched signals
     that feed the deterministic policy engine.
+
+    decision_path — ordered list of node IDs visited while walking the tree
+    (e.g. [1, 2, 3]).  Acts as the audit trail for the LLM's reasoning.
     """
     category: Category
     priority: Priority
     escalation_risk: EscalationRisk
     confidence: float
     model_version: str
+    decision_path: list[int] = None  # type: ignore[assignment]
 
 
 class OpenRouterTriageClient:
@@ -111,29 +119,41 @@ class OpenRouterTriageClient:
         if self.http_referer:
             headers["HTTP-Referer"] = self.http_referer
 
+        ticket_payload = json.dumps({
+            "title": ticket.title,
+            "description": ticket.description,
+            "customer_metadata": ticket.customer_metadata,
+            "channel": ticket.channel,
+        })
+
         payload = {
             "model": self.model,
             "temperature": 0,
-            "max_tokens": 250,
+            "max_tokens": 500,
             "response_format": {"type": "json_object"},
             "messages": [
                 {
+                    "role": "system",
+                    "content": (
+                        "You are a support triage assistant for a SaaS fintech platform. "
+                        "You MUST use the hierarchical decision tree below to classify every ticket. "
+                        "Walk the tree from Node 1 downwards, recording each node id you visit in decision_path. "
+                        "Stop at the first terminal leaf you reach.\n\n"
+                        f"Decision tree:\n{_TREE_JSON}"
+                    ),
+                },
+                {
                     "role": "user",
                     "content": (
-                        "Extract structured classification features from the support ticket below. "
-                        "Return ONLY a JSON object with exactly these keys: "
-                        "category, priority, escalation_risk, confidence. "
-                        f"Allowed category values (exact strings): {sorted(_VALID_CATEGORIES)}. "
-                        f"Allowed priority values (exact strings): {sorted(_VALID_PRIORITIES)}. "
-                        f"Allowed escalation_risk values (exact strings): {sorted(_VALID_ESCALATION_RISKS)}. "
-                        "confidence must be a number between 0 and 1. "
-                        "Do NOT make a final decision — only classify features.\n"
-                        f"Ticket: {json.dumps({
-                            'title': ticket.title,
-                            'description': ticket.description,
-                            'customer_metadata': ticket.customer_metadata,
-                            'channel': ticket.channel,
-                        })}"
+                        "Classify the following support ticket using the decision tree. "
+                        "Return ONLY a JSON object with exactly these keys:\n"
+                        "  category        — one of: " + str(sorted(_VALID_CATEGORIES)) + "\n"
+                        "  priority        — one of: " + str(sorted(_VALID_PRIORITIES)) + "\n"
+                        "  escalation_risk — one of: " + str(sorted(_VALID_ESCALATION_RISKS)) + "\n"
+                        "  confidence      — float 0-1 (your certainty in the classification)\n"
+                        "  decision_path   — list of integer node ids you visited (e.g. [1, 2, 3])\n\n"
+                        "Do NOT include any other keys. Do NOT make a final approve/block decision.\n"
+                        f"Ticket: {ticket_payload}"
                     ),
                 },
             ],
@@ -163,6 +183,7 @@ class OpenRouterTriageClient:
                 escalation_risk=EscalationRisk(parsed["escalation_risk"]),
                 confidence=self._clamp_confidence(parsed["confidence"]),
                 model_version=f"openrouter:{self.model}",
+                decision_path=parsed.get("decision_path", []),
             )
             self._record_success()
             return result
@@ -194,6 +215,14 @@ class OpenRouterTriageClient:
         missing = _REQUIRED_KEYS - parsed.keys()
         if missing:
             logger.warning("LLM response missing required keys %s; rules fallback", missing)
+            return None
+
+        # Validate decision_path — list of valid node ids following tree edges
+        if not validate_decision_path(parsed.get("decision_path", [])):
+            logger.warning(
+                "LLM returned invalid decision_path %r; rules fallback",
+                parsed.get("decision_path"),
+            )
             return None
 
         if parsed["category"] not in _VALID_CATEGORIES:
