@@ -18,11 +18,32 @@ spring:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
     producer:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
-      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      acks: all
+      retries: 3
       properties:
-        spring.json.add.type.headers: false
+        enable.idempotence: true
+        max.in.flight.requests.per.connection: 1
+        delivery.timeout.ms: 30000
+        request.timeout.ms: 10000
+  scheduling:
+    pool:
+      size: 2
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: always
 
 app:
   kafka:
     topics:
       ticket-created: support.ticket.created
+      ticket-dlq: support.ticket.created.dlq
+      risk-decision: support.risk.decision
+  outbox:
+    relay-interval-ms: 500

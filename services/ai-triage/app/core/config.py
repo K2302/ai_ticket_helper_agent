@@ -12,5 +12,7 @@ class Settings(BaseSettings):
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     openrouter_http_referer: str | None = None
     openrouter_app_title: str = "ai-human-loop"
+    # Phase 4 — kill switch check on startup for known providers
+    openrouter_provider_key: str = "openrouter:openai/gpt-4o-mini"
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")

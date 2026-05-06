@@ -41,6 +41,12 @@ public class Ticket {
     @Column(nullable = false, length = 40)
     private TicketStatus status = TicketStatus.RECEIVED;
 
+    @Column(name = "idempotency_key", length = 200)
+    private String idempotencyKey;
+
+    @Column(name = "correlation_id", nullable = false)
+    private UUID correlationId = UUID.randomUUID();
+
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)
     private OffsetDateTime createdAt;
@@ -91,6 +97,22 @@ public class Ticket {
 
     public void setStatus(TicketStatus status) {
         this.status = status;
+    }
+
+    public String getIdempotencyKey() {
+        return idempotencyKey;
+    }
+
+    public void setIdempotencyKey(String idempotencyKey) {
+        this.idempotencyKey = idempotencyKey;
+    }
+
+    public UUID getCorrelationId() {
+        return correlationId;
+    }
+
+    public void setCorrelationId(UUID correlationId) {
+        this.correlationId = correlationId;
     }
 
     public OffsetDateTime getCreatedAt() {

@@ -511,3 +511,20 @@ Could not connect to `archive.ubuntu.com`:
 ```bash
 sudo apt -o Acquire::ForceIPv4=true update
 ```
+
+### Docker development
+
+A minimal Docker Compose setup is provided for local development (Postgres + ai-triage).
+
+Start services:
+
+```bash
+docker compose -f docker-compose.dev.yml up --build
+```
+
+The ai-triage service will be available on http://localhost:8000. Environment variables such as `DATABASE_URL` and `OPENROUTER_API_KEY` can be provided via a `.env` in the repo root or by editing `docker-compose.dev.yml`.
+
+Notes:
+
+- The `ai-triage` service mounts the source tree for quick iteration. Use the container logs or `uvicorn` output for debugging.
+- For production builds, build without the source mount and pin dependencies in `requirements.txt`.

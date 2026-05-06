@@ -1,24 +1,31 @@
 package com.aihumanloop.ingestion.service;
 
+import com.aihumanloop.ingestion.domain.OutboxEvent;
 import com.aihumanloop.ingestion.domain.Ticket;
 import com.aihumanloop.ingestion.dto.CreateTicketRequest;
 import com.aihumanloop.ingestion.dto.TicketResponse;
-import com.aihumanloop.ingestion.events.TicketCreatedEvent;
+import com.aihumanloop.ingestion.repository.OutboxEventRepository;
 import com.aihumanloop.ingestion.repository.TicketRepository;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import java.util.Map;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class TicketService {
     private final TicketRepository ticketRepository;
-    private final TicketEventProducer eventProducer;
+    private final OutboxEventRepository outboxEventRepository;
+    private final ObjectMapper objectMapper;
 
     public TicketService(
             TicketRepository ticketRepository,
-            TicketEventProducer eventProducer
+            OutboxEventRepository outboxEventRepository,
+            ObjectMapper objectMapper
     ) {
         this.ticketRepository = ticketRepository;
-        this.eventProducer = eventProducer;
+        this.outboxEventRepository = outboxEventRepository;
+        this.objectMapper = objectMapper;
     }
 
     @Transactional
@@ -28,18 +35,35 @@ public class TicketService {
         ticket.setDescription(request.description());
         ticket.setCustomerMetadata(request.customerMetadata());
         ticket.setChannel(request.channel());
+        ticket.setIdempotencyKey(request.idempotencyKey());
 
         Ticket saved = ticketRepository.saveAndFlush(ticket);
-        TicketResponse response = toResponse(saved);
-        eventProducer.publish(new TicketCreatedEvent(
-                saved.getId(),
-                saved.getTitle(),
-                saved.getDescription(),
-                saved.getCustomerMetadata(),
-                saved.getChannel(),
-                saved.getCreatedAt()
-        ));
-        return response;
+
+        // Write outbox in same transaction — no dual-write risk
+        OutboxEvent outboxEvent = new OutboxEvent();
+        outboxEvent.setAggregateId(saved.getId());
+        outboxEvent.setAggregateType("Ticket");
+        outboxEvent.setEventType("TicketCreated");
+        outboxEvent.setPayload(buildPayload(saved));
+        outboxEventRepository.save(outboxEvent);
+
+        return toResponse(saved);
+    }
+
+    private String buildPayload(Ticket ticket) {
+        try {
+            return objectMapper.writeValueAsString(Map.of(
+                    "ticketId", ticket.getId().toString(),
+                    "title", ticket.getTitle(),
+                    "description", ticket.getDescription(),
+                    "customerMetadata", ticket.getCustomerMetadata(),
+                    "channel", ticket.getChannel().name(),
+                    "correlationId", ticket.getCorrelationId().toString(),
+                    "createdAt", ticket.getCreatedAt().toString()
+            ));
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("Failed to serialize outbox payload", e);
+        }
     }
 
     private TicketResponse toResponse(Ticket ticket) {
