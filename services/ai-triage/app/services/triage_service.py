@@ -2,7 +2,7 @@ import logging
 
 from app.domain.models import AuditAction, TicketCreatedEvent
 from app.infrastructure.repositories import AuditLogRepository, HumanReviewRepository, TriageResultRepository
-from app.services.classifier import TicketClassifier
+from app.services.classifier import TicketClassifier, _path_confidence
 from app.services.confidence import ConfidencePolicy
 from app.services.escalation import EscalationScorer
 from app.services.feature_extractor import FeatureExtractor
@@ -79,17 +79,26 @@ class TriageService:
             llm_features = await self.openrouter_client.extract_features(ticket)
 
         # ── Step 4: Resolve category / priority / escalation_risk ─────────────
+        decision_path: list[int] = []
+        target_team_hint: str | None = None
+
         if llm_features is not None:
             category = llm_features.category
             priority = llm_features.priority
             escalation_risk = llm_features.escalation_risk
             confidence = llm_features.confidence
             model_version = llm_features.model_version
+            decision_path = llm_features.decision_path or []
         else:
-            # Rules-only path: deterministic classifiers
-            category, category_confidence = self.classifier.classify(ticket)
+            # Rules-only path: tree-based deterministic classifiers
+            tree_decision = self.classifier.classify_with_tree(ticket)
+            category = tree_decision.category
+            target_team_hint = tree_decision.target_team
+            decision_path = tree_decision.decision_path
+
             priority, priority_confidence = self.priority_predictor.predict(ticket)
             escalation_risk, escalation_confidence = self.escalation_scorer.score(ticket, features=features)
+            category_confidence = _path_confidence(decision_path)
             confidence = self.confidence_policy.score(
                 category_confidence,
                 priority_confidence,
@@ -98,7 +107,10 @@ class TriageService:
             model_version = self._RULES_MODEL_VERSION
 
         # ── Step 5: routing ───────────────────────────────────────────────────
-        assigned_team = self.routing_engine.route(category, priority, escalation_risk)
+        assigned_team = self.routing_engine.route(
+            category, priority, escalation_risk,
+            target_team_hint=target_team_hint,
+        )
 
         # ── Step 6: segment-aware requires_review (Phase 3 matrix) ───────────
         requires_review = self.confidence_policy.requires_review(
@@ -133,6 +145,7 @@ class TriageService:
                 "model_version": model_version,
                 "tier0_fired": tier0_fired,
                 "llm_used": llm_features is not None,
+                "decision_path": decision_path,
             },
         )
 
@@ -160,6 +173,7 @@ class TriageService:
                     "model_version": model_version,
                     "tier0_fired": tier0_fired,
                     "llm_used": llm_features is not None,
+                    "decision_path": decision_path,
                 },
                 risk_decision_id=risk_decision.id,
             )
