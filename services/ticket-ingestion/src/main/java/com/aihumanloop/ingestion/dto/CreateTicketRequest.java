@@ -10,6 +10,7 @@ public record CreateTicketRequest(
         @NotBlank @Size(max = 200) String title,
         @NotBlank String description,
         @NotNull Map<String, Object> customerMetadata,
-        @NotNull TicketChannel channel
+        @NotNull TicketChannel channel,
+        @Size(max = 200) String idempotencyKey
 ) {
 }
