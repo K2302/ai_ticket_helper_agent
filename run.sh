@@ -16,6 +16,7 @@ export PGPASSWORD="$DB_PASSWORD"
 echo "==> Stopping old app processes"
 pkill -f 'ticket-ingestion' || true
 pkill -f 'spring-boot:run' || true
+pkill -f 'uvicorn app.main:app' || true
 
 echo "==> Terminating active DB sessions"
 psql "postgresql://$DB_USER:$DB_PASSWORD@$DB_HOST:$DB_PORT/postgres" -c "
@@ -54,6 +55,13 @@ for _ in {1..10}; do
   fi
   sleep 1
 done
+
+echo "==> Starting AI Triage service"
+cd "$PROJECT_ROOT/services/ai-triage"
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+uvicorn app.main:app --host 127.0.0.1 --port 8000 &
 
 echo "==> Starting Spring Boot ingestion service"
 cd "$INGESTION_DIR"

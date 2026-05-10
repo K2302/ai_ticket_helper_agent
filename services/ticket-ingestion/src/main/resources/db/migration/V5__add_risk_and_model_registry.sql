@@ -35,6 +35,8 @@ create table risk_decisions (
     feature_snapshot_hash varchar(64),
     explainability       jsonb        not null default '{}'::jsonb,
     model_version        varchar(120) not null,
+    rule_version         varchar(120),
+    prompt_version       varchar(120),
     created_at           timestamptz  not null default now(),
     constraint risk_decision_check check (decision in ('APPROVE', 'REVIEW', 'BLOCK')),
     constraint risk_decisions_score_check check (score >= 0 and score <= 1)

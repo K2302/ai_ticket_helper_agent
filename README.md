@@ -431,6 +431,79 @@ Fault boundary:
 - `tickets > 0` and `triage_results = 0`: ingestion works, AI triage processing is broken
 - likely causes: consumer not running, wrong topic/group config, message not consumed, classification error, insert failure
 
+### AI Decision Tree Architecture
+
+The system uses a 6-node decision tree to evaluate support tickets. The model or rules-engine walks the nodes in order, resulting in a consistent and interpretable routing path.
+
+```mermaid
+graph TD
+    Start([New Ticket]) --> N1
+
+    N1{"Node 1: Identity & Access<br/>(locked out, MFA, 403)"}
+    N1 -- Yes --> C1["Category: Account Access<br/>Team: Account Support"]
+    N1 -- No --> N2
+
+    N2{"Node 2: Financial / Commercial<br/>(refund, invoice, pricing)"}
+    N2 -- Yes --> N3
+    N2 -- No --> N4
+
+    N3{"Node 3: Billing Depth<br/>(failed payment, overcharge)"}
+    N3 -- Yes --> C3A["Category: Billing<br/>Team: Billing Support<br/>Priority: High"]
+    N3 -- No --> C3B["Category: Billing<br/>Team: Billing Support<br/>Priority: Medium"]
+
+    N4{"Node 4: System Health<br/>(500, outage, latency)"}
+    N4 -- Yes --> C4["Category: Technical Support<br/>Team: Engineering L1<br/>Priority: High"]
+    N4 -- No --> N5
+
+    N5{"Node 5: Product / Feature<br/>(how-to, feature request)"}
+    N5 -- Yes --> C5["Category: General Query<br/>Team: Product & Success<br/>Priority: Low"]
+    N5 -- No --> N6
+
+    N6{"Node 6: Sentiment / Urgency<br/>(cancel, furious, legal action)"}
+    N6 -- Yes --> C6A["Category: General Query<br/>Team: Customer Support<br/>Risk: High"]
+    N6 -- No --> C6B["Category: General Query<br/>Team: Customer Support<br/>Default Routing"]
+```
+
+### Test AI Decision Tree Navigation
+
+To see the AI navigate deep into the decision tree, you can provide queries that intentionally bypass the early nodes or trigger the nested sub-nodes.
+
+**Example 1: Nested Branch (Billing Depth)**
+This query bypasses the Access rules (Node 1), triggers the Financial rules (Node 2), and then triggers the nested Billing Depth rules (Node 3) because it mentions "double charged":
+
+```bash
+curl -s -X POST http://localhost:8080/tickets \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "Incorrect charge on my account",
+    "description": "I was double charged for my monthly subscription. Please fix this invoice.",
+    "customerMetadata": {"customerId": "cust_404"},
+    "channel": "WEB"
+  }' > response.json
+TICKET_ID=$(python3 -c "import sys, json; print(json.load(open('\''response.json'\''))['\''id'\''])")
+sleep 5
+curl -s http://localhost:8000/triage-results/$TICKET_ID
+```
+Expected `decision_path`: `[1, 2, 3]` (Checks Node 1 → Checks Node 2 → Dives into Node 3)
+
+**Example 2: Longest Tree Walk (Sentiment Filter)**
+This query bypasses Identity (1), Financial (2), System Health (4), and Product Features (5), finally triggering the Sentiment/Urgency filter at the very end of the tree (Node 6):
+
+```bash
+curl -s -X POST http://localhost:8080/tickets \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "Terrible service, I am leaving",
+    "description": "This is completely unacceptable. If you do not fix my data export I will take legal action and cancel my account.",
+    "customerMetadata": {"customerId": "cust_999"},
+    "channel": "WEB"
+  }' > response.json
+TICKET_ID=$(python3 -c "import sys, json; print(json.load(open('\''response.json'\''))['\''id'\''])")
+sleep 5
+curl -s http://localhost:8000/triage-results/$TICKET_ID
+```
+Expected `decision_path`: `[1, 2, 4, 5, 6]` (Checks 1 → 2 → 4 → 5 → Hits 6)
+
 ## Phase 4
 
 Feedback capture and audit logging.
